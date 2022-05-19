@@ -3432,17 +3432,18 @@ static SILValue joinElements(ArrayRef<SILValue> elements, SILBuilder &builder,
 }
 
 /// Adapted from `SILGenModule::getOrCreateReabstractionThunk`.
-ManagedValue SILGenFunction::getThunkedAutoDiffLinearMap(
+ManagedValue SILGenFunction::emitTransformedAutoDiffLinearMap(
     ManagedValue linearMap, AutoDiffLinearMapKind linearMapKind,
-    CanSILFunctionType fromType, CanSILFunctionType toType, bool reorderSelf) {
+    CanSILFunctionType substFromType, CanSILFunctionType substToType,
+    bool reorderSelf) {
   // Compute the thunk type.
   SubstitutionMap interfaceSubs;
   GenericEnvironment *genericEnv = nullptr;
   // Ignore subst types.
   CanType inputSubstType, outputSubstType;
   CanType dynamicSelfType;
-  fromType = fromType->getUnsubstitutedType(getModule());
-  toType = toType->getUnsubstitutedType(getModule());
+  auto fromType = substFromType->getUnsubstitutedType(getModule());
+  auto toType = substToType->getUnsubstitutedType(getModule());
   auto thunkType =
       buildThunkType(fromType, toType, inputSubstType, outputSubstType,
                      genericEnv, interfaceSubs, dynamicSelfType);
@@ -3490,6 +3491,10 @@ ManagedValue SILGenFunction::getThunkedAutoDiffLinearMap(
     }
     auto thunkedFn = createPartialApplyOfThunk(
         *this, loc, thunk, interfaceSubs, dynamicSelfType, toType, linearMap);
+    if (thunkedFn.getType().getASTType() != substToType) {
+      thunkedFn = B.createConvertFunction(
+          loc, thunkedFn, SILType::getPrimitiveObjectType(substToType));
+    }
     if (!toType->isNoEscape())
       return thunkedFn;
     // Handle escaping to noescape conversion.
@@ -3637,9 +3642,16 @@ ManagedValue SILGenFunction::getThunkedAutoDiffLinearMap(
     arguments.push_back(load.getValue());
   }
 
-  auto *linearMapArg = thunk->getArgumentsWithoutIndirectResults().back();
-  auto *apply = thunkSGF.B.createApply(loc, linearMapArg, SubstitutionMap(),
-                                       arguments);
+  auto linearMapArg = thunkArguments.back();
+  SILValue linearMapArgToApply;
+  if (fromType->isCalleeConsumed()) {
+    assert(linearMapArg.getOwnershipKind() == OwnershipKind::Owned);
+    linearMapArgToApply = linearMapArg.forward(thunkSGF);
+  } else {
+    linearMapArgToApply = linearMapArg.borrow(thunkSGF, loc).getValue();
+  }
+  auto *apply = thunkSGF.B.createApply(
+      loc, linearMapArgToApply, SubstitutionMap(), arguments);
 
   // Get return elements.
   SmallVector<SILValue, 4> results;
@@ -3856,7 +3868,7 @@ SILFunction *SILGenModule::getOrCreateCustomDerivativeThunk(
   auto linearMap = thunkSGF.emitManagedRValueWithCleanup(directResults.back());
   assert(linearMap.getType().castTo<SILFunctionType>() == linearMapFnType);
   auto linearMapKind = kind.getLinearMapKind();
-  linearMap = thunkSGF.getThunkedAutoDiffLinearMap(
+  linearMap = thunkSGF.emitTransformedAutoDiffLinearMap(
       linearMap, linearMapKind, linearMapFnType, targetLinearMapFnType,
       reorderSelf);
   auto typeExpansionContext = thunkSGF.getTypeExpansionContext();
@@ -3872,14 +3884,6 @@ SILFunction *SILGenModule::getOrCreateCustomDerivativeThunk(
     linearMapResultType = SILType::getPrimitiveType(
         tupleType->getElementTypes().back()->getCanonicalType(),
         conv.getSILResultType(typeExpansionContext).getCategory());
-  }
-
-  auto targetLinearMapUnsubstFnType =
-      SILType::getPrimitiveObjectType(targetLinearMapFnType);
-  if (linearMap.getType() != targetLinearMapUnsubstFnType) {
-    linearMap = thunkSGF.B.createConvertFunction(
-        loc, linearMap, targetLinearMapUnsubstFnType,
-        /*withoutActuallyEscaping*/ false);
   }
 
   // Return original results and thunked differential/pullback.

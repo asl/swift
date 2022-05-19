@@ -253,11 +253,11 @@ public:
       Builder.createEndBorrow(loc, borrowedPullbackContextValue);
       pullbackPartialApply = Builder.createPartialApply(
         loc, pullbackRef, vjpSubstMap, {pullbackContextValue},
-        ParameterConvention::Direct_Guaranteed);
+        ParameterConvention::Direct_Owned);
     } else {
       pullbackPartialApply = Builder.createPartialApply(
         loc, pullbackRef, vjpSubstMap, getPullbackValues(origExit),
-        ParameterConvention::Direct_Guaranteed);
+        ParameterConvention::Direct_Owned);
     }
 
     auto pullbackType = vjp->mapTypeIntoContext(
@@ -614,7 +614,7 @@ public:
 
     // Record desired/actual VJP indices.
     // Temporarily set original pullback type to `None`.
-    NestedApplyInfo info{config, /*originalPullbackType*/ None};
+    NestedApplyInfo info{config, /*originalPullbackType*/ CanSILFunctionType()};
     auto insertion = context.getNestedApplyInfo().try_emplace(ai, info);
     auto &nestedApplyInfo = insertion.first->getSecond();
     nestedApplyInfo = info;
@@ -662,22 +662,21 @@ public:
     // Checkpoint the pullback.
     auto pullbackType = pullbackInfo.lookUpLinearMapType(ai);
 
-    // If actual pullback type does not match lowered pullback type, reabstract
-    // the pullback using a thunk.
+    // The actual pullback type will have a different abstraction pattern than
+    // the type lowered from the AST type. Here we perform a bitcast to avoid
+    // performing unnecessary reabstraction. The pullback function is the only
+    // thing that will use these closures, and it will bitcast these closures
+    // back to their original type.
+    // FIXME: Switch to using tuples so that we don't have to perform this
+    // conversion.
     auto actualPullbackType =
         getOpType(pullback->getType()).getAs<SILFunctionType>();
+    nestedApplyInfo.originalPullbackType = actualPullbackType;
     auto loweredPullbackType =
         getOpType(getLoweredType(pullbackType)).castTo<SILFunctionType>();
-    if (!loweredPullbackType->isEqual(actualPullbackType)) {
-      // Set non-reabstracted original pullback type in nested apply info.
-      nestedApplyInfo.originalPullbackType = actualPullbackType;
-      SILOptFunctionBuilder fb(context.getTransform());
-      pullback = reabstractFunction(
-          getBuilder(), fb, ai->getLoc(), pullback, loweredPullbackType,
-          [this](SubstitutionMap subs) -> SubstitutionMap {
-            return this->getOpSubstitutionMap(subs);
-          });
-    }
+    pullback = builder.createUncheckedForwardingCast(
+        ai->getLoc(), pullback,
+        SILType::getPrimitiveObjectType(loweredPullbackType));
     pullbackValues[ai->getParent()].push_back(pullback);
 
     // Some instructions that produce the callee may have been cloned.

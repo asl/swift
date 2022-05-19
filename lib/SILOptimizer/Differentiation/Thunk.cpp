@@ -347,7 +347,7 @@ SILValue reabstractFunction(
 
   fn = builder.createPartialApply(
       loc, thunkRef, remapSubstitutions(thunk->getForwardingSubstitutionMap()),
-      {fn}, fromType->getCalleeConvention());
+      {fn}, toType->getCalleeConvention());
 
   if (toType != unsubstToType)
     fn = builder.createConvertFunction(loc, fn,
@@ -547,7 +547,7 @@ getOrCreateSubsetParametersThunkForLinearMap(
   }
   }
 
-  // Get the linear map thunk argument and apply it.
+  // Get the linear map value (the thunk's last argument) and apply it.
   auto *linearMap = thunk->getArguments().back();
   auto *ai = builder.createApply(loc, linearMap, SubstitutionMap(), arguments);
 
@@ -673,6 +673,7 @@ getOrCreateSubsetParametersThunkForDerivativeFunction(
       loc, thunkName, thunkType, IsBare, IsTransparent, caller->isSerialized(),
       ProfileCounter(), IsThunk, IsNotDynamic, IsNotDistributed,
       IsNotRuntimeAccessible);
+  thunk->setInlineStrategy(AlwaysInline);
 
   if (!thunk->empty())
     return {thunk, interfaceSubs};
@@ -764,7 +765,9 @@ getOrCreateSubsetParametersThunkForDerivativeFunction(
   }
   thunkedLinearMap = builder.createPartialApply(
       loc, linearMapThunkFRI, linearMapSubs, {thunkedLinearMap},
-      ParameterConvention::Direct_Guaranteed);
+      linearMapTargetType->isCalleeConsumed()
+          ? ParameterConvention::Direct_Owned
+          : ParameterConvention::Direct_Guaranteed);
   if (linearMapTargetType != unsubstLinearMapTargetType) {
     thunkedLinearMap = builder.createConvertFunction(
         loc, thunkedLinearMap,
