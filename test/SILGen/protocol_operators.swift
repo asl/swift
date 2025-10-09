@@ -1,5 +1,7 @@
 // RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
 
+// Operators are no longer devirtualized at AST level, it's done during SIL optimization.
+
 infix operator +++
 
 protocol Twig {
@@ -12,7 +14,7 @@ struct Branch : Twig {
 }
 
 // CHECK-LABEL: sil hidden [ossa] @$s18protocol_operators9useBranchyyAA0D0VF : $@convention(thin) (Branch) -> () {
-// CHECK: function_ref @$s18protocol_operators6BranchV4doItyyAC_ACtFZ : $@convention(method) (Branch, Branch, @thin Branch.Type) -> ()
+// CHECK: witness_method $Branch, #Twig."+++" : <Self where Self : Twig> (Self.Type) -> (Self, Self) -> ()
 // CHECK: return
 func useBranch(_ b: Branch) {
   b +++ b
